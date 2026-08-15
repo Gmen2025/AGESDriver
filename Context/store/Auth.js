@@ -53,6 +53,35 @@ export const AuthProvider = ({ children }) => {
     }
   }, []);
 
+  const register = useCallback(async (name, email, password) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await axios.post(`${baseUrl}users/register`, {
+        name,
+        email,
+        password,
+        role: "driver",
+      });
+      const { token: authToken, ...userData } = res.data;
+
+      if (authToken) {
+        await AsyncStorage.setItem("driver_token", authToken);
+        await AsyncStorage.setItem("driver_user", JSON.stringify(userData));
+        setToken(authToken);
+        setUser(userData);
+      }
+
+      return { ok: true, authenticated: Boolean(authToken) };
+    } catch (registerError) {
+      const message = registerError.response?.data?.message || "Registration failed";
+      setError(message);
+      return { ok: false, message };
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const logout = useCallback(async () => {
     await AsyncStorage.removeItem("driver_token");
     await AsyncStorage.removeItem("driver_user");
@@ -62,7 +91,16 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider
-      value={{ user, token, loading, error, isAuthenticated: Boolean(token), login, logout }}
+      value={{
+        user,
+        token,
+        loading,
+        error,
+        isAuthenticated: Boolean(token),
+        login,
+        register,
+        logout,
+      }}
     >
       {children}
     </AuthContext.Provider>

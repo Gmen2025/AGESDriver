@@ -11,22 +11,57 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../Context/store/Auth";
 
 const Login = () => {
-  const { login, loading, error } = useAuth();
+  const { login, register, loading, error } = useAuth();
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   const handleLogin = () => {
-    if (!email || !password) {
+    if (isRegistering && (!name.trim() || !email || !password || !confirmPassword)) {
       return;
     }
+    if (!isRegistering && (!email || !password)) {
+      return;
+    }
+    if (isRegistering && password !== confirmPassword) {
+      return;
+    }
+
+    if (isRegistering) {
+      register(name.trim(), email.trim().toLowerCase(), password);
+      return;
+    }
+
     login(email.trim().toLowerCase(), password);
+  };
+
+  const toggleMode = () => {
+    setIsRegistering((currentMode) => !currentMode);
+    setName("");
+    setEmail("");
+    setPassword("");
+    setConfirmPassword("");
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
         <Text style={styles.title}>AGES Driver</Text>
-        <Text style={styles.subtitle}>Sign in with your driver account</Text>
+        <Text style={styles.subtitle}>
+          {isRegistering ? "Create your driver account" : "Sign in with your driver account"}
+        </Text>
+
+        {isRegistering ? (
+          <TextInput
+            style={styles.input}
+            placeholder="Full name"
+            autoCapitalize="words"
+            value={name}
+            onChangeText={setName}
+          />
+        ) : null}
 
         <TextInput
           style={styles.input}
@@ -44,14 +79,34 @@ const Login = () => {
           onChangeText={setPassword}
         />
 
+        {isRegistering ? (
+          <TextInput
+            style={styles.input}
+            placeholder="Confirm password"
+            secureTextEntry
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+          />
+        ) : null}
+
         {error ? <Text style={styles.error}>{error}</Text> : null}
+
+        {isRegistering && password && confirmPassword && password !== confirmPassword ? (
+          <Text style={styles.error}>Passwords do not match</Text>
+        ) : null}
 
         <TouchableOpacity style={styles.button} onPress={handleLogin} disabled={loading}>
           {loading ? (
             <ActivityIndicator color="#ffffff" />
           ) : (
-            <Text style={styles.buttonText}>Sign In</Text>
+            <Text style={styles.buttonText}>{isRegistering ? "Register" : "Sign In"}</Text>
           )}
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={toggleMode} disabled={loading} style={styles.modeButton}>
+          <Text style={styles.modeButtonText}>
+            {isRegistering ? "Already have an account? Sign in" : "New driver? Register here"}
+          </Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -105,6 +160,14 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontWeight: "700",
     fontSize: 16,
+  },
+  modeButton: {
+    alignItems: "center",
+    marginTop: 18,
+  },
+  modeButtonText: {
+    color: "#8a6c09",
+    fontWeight: "600",
   },
 });
 
