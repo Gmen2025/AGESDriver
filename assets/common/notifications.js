@@ -32,6 +32,10 @@ export const registerDriverPushToken = async (driverId, authToken) => {
     return { ok: false, message: "Driver ID, authentication, and a physical device are required" };
   }
 
+  if (Constants?.appOwnership === "expo") {
+    return { ok: false, message: "Remote push notifications require a development build" };
+  }
+
   await setupAndroidChannel();
   const permission = await Notifications.getPermissionsAsync();
   const finalStatus = permission.status === "granted"

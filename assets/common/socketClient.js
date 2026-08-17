@@ -58,14 +58,14 @@ const getSocketUrl = () => {
       : "";
 
   const normalized = normalizeSocketUrl(candidate);
-  return normalized || "http://192.168.1.10:5000";
+  return normalized || "https://easy-shop-server-wldr.onrender.com";
 };
 
 export const getSocketConnectionStatus = () => {
   const socketUrl = getSocketUrl();
   return {
     socketUrl,
-    configured: Boolean(socketUrl && socketUrl !== "http://192.168.1.10:5000"),
+    configured: Boolean(socketUrl),
   };
 };
 
