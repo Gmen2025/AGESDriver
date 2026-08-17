@@ -11,16 +11,6 @@ import DriverDashboard from "./Screens/DriverDashboard";
 
 const Stack = createStackNavigator();
 
-// Lets easy_shopping hand delivery status back to this app, e.g. agesdriver://completed-delivery?data=...
-const linking = {
-  prefixes: ["agesdriver://"],
-  config: {
-    screens: {
-      Dashboard: ":action?",
-    },
-  },
-};
-
 const RootNavigator = () => {
   const { isAuthenticated, loading } = useAuth();
 
@@ -47,7 +37,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <NavigationContainer linking={linking}>
+        <NavigationContainer>
           <RootNavigator />
         </NavigationContainer>
         <StatusBar style="auto" />

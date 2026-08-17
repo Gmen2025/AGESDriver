@@ -7,10 +7,8 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useNavigation, useRoute } from "@react-navigation/native";
 import { Audio } from "expo-av";
 import * as Haptics from "expo-haptics";
-import { Linking } from "react-native";
 
 import DeliveryRequestModal from "../Shared/DeliveryRequestModal";
 import {
@@ -21,28 +19,32 @@ import {
   registerDriverSocket,
 } from "../assets/common/socketClient";
 import { useAuth } from "../Context/store/Auth";
+import {
+  addDriverNotificationListener,
+  addDriverNotificationResponseListener,
+  registerDriverPushToken,
+  removeDriverNotificationListener,
+} from "../assets/common/notifications";
+import { updateDeliveryStatus } from "../assets/common/delivery";
 
 const DEFAULT_DRIVER_COORDINATES = {
   latitude: 8.9806,
   longitude: 38.7578,
 };
 
-// The customer-facing easy_shopping app owns route navigation/tracking during a delivery.
-const openEasyShoppingRoute = async (orderStatus, request) => {
-  const url = `addugeneteshop://delivery-route/${orderStatus}?request=${encodeURIComponent(
-    JSON.stringify(request)
-  )}`;
-  try {
-    await Linking.openURL(url);
-  } catch (error) {
-    console.warn("Unable to open easy_shopping app for route navigation:", error);
-  }
-};
+const normalizeDeliveryRequest = (payload = {}) => ({
+  id: payload?.orderId || payload?.id || payload?.order?._id || `delivery-${Date.now()}`,
+  pickupStoreName: payload?.pickupStoreName || payload?.order?.store?.name || payload?.store?.name || "North Hub Store",
+  totalDistance: payload?.totalDistance || "4.8 km",
+  payout: payload?.payout || "ETB 220",
+  customerName: payload?.customerName || payload?.order?.customer?.name || payload?.customer?.name || "Customer",
+  customerLocation: payload?.customerLocation || payload?.order?.customerLocation || payload?.customer?.location || null,
+  storeLocation: payload?.storeLocation || payload?.order?.store?.location || payload?.store?.location || null,
+  rawPayload: payload,
+});
 
 const DriverDashboard = () => {
-  const navigation = useNavigation();
-  const route = useRoute();
-  const { logout, user } = useAuth();
+  const { logout, user, token } = useAuth();
   const [socketConnected, setSocketConnected] = useState(false);
   const [activeRequest, setActiveRequest] = useState(null);
   const [countdown, setCountdown] = useState(30);
@@ -50,6 +52,7 @@ const DriverDashboard = () => {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isAlertPlaying, setIsAlertPlaying] = useState(false);
   const [completedDelivery, setCompletedDelivery] = useState(null);
+  const [acceptedDelivery, setAcceptedDelivery] = useState(null);
   const [pendingDeliveries, setPendingDeliveries] = useState([]);
   const soundRef = useRef(null);
   const timerRef = useRef(null);
@@ -100,11 +103,41 @@ const DriverDashboard = () => {
   }, [stopAlert]);
 
   const handleOpenPendingDelivery = useCallback((request) => {
-    openEasyShoppingRoute("Picked Up", {
-      ...request,
-      driverCoordinates: request.driverCoordinates || DEFAULT_DRIVER_COORDINATES,
-    });
+    setAcceptedDelivery(request);
+    setStatusText("Pending delivery loaded");
   }, []);
+
+  const handlePushDelivery = useCallback((notification) => {
+    const data = notification?.request?.content?.data || {};
+    if (data.type !== "delivery_assigned" && !data.orderId) {
+      return;
+    }
+
+    const request = normalizeDeliveryRequest(data.order || data);
+    setActiveRequest(request);
+    setCountdown(30);
+    setStatusText(`Incoming delivery from ${request.pickupStoreName}`);
+    playAlert();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+  }, [playAlert]);
+
+  const handlePushResponse = useCallback((response) => {
+    handlePushDelivery(response?.notification);
+  }, [handlePushDelivery]);
+
+  useEffect(() => {
+    const driverId = process.env.EXPO_PUBLIC_DRIVER_ID || user?._id;
+    registerDriverPushToken(driverId, token).catch((error) => {
+      console.warn("Driver push registration failed:", error?.message || error);
+    });
+
+    const subscription = addDriverNotificationListener(handlePushDelivery);
+    const responseSubscription = addDriverNotificationResponseListener(handlePushResponse);
+    return () => {
+      removeDriverNotificationListener(subscription);
+      removeDriverNotificationListener(responseSubscription);
+    };
+  }, [handlePushDelivery, handlePushResponse, token, user?._id]);
 
   const handleReject = useCallback(async (expired = false) => {
     if (!activeRequest) {
@@ -149,7 +182,8 @@ const DriverDashboard = () => {
     };
 
     await resetRequestState();
-    await openEasyShoppingRoute("Driver Assigned", request);
+    setAcceptedDelivery(request);
+    setStatusText("Delivery accepted. Review the delivery details below.");
     setIsTransitioning(false);
   }, [activeRequest, resetRequestState]);
 
@@ -273,39 +307,24 @@ const DriverDashboard = () => {
     };
   }, [playAlert, stopAlert, user?._id]);
 
-  // Handle handoff back from easy_shopping via agesdriver://<action>?data=<json>
-  useEffect(() => {
-    const action = route.params?.action;
-    const rawData = route.params?.data;
-    if (!action || !rawData) {
+  const markDeliveryStatus = useCallback(async (deliveryStatus) => {
+    if (!acceptedDelivery) {
       return;
     }
 
-    let parsedData = {};
     try {
-      parsedData = JSON.parse(rawData);
+      await updateDeliveryStatus(acceptedDelivery.id, deliveryStatus);
+      if (deliveryStatus === "Delivered") {
+        setCompletedDelivery(acceptedDelivery);
+        setAcceptedDelivery(null);
+        setStatusText("Delivery completed. Waiting for the next request.");
+      } else {
+        setStatusText(`Delivery status updated to ${deliveryStatus}.`);
+      }
     } catch (error) {
-      console.warn("Unable to parse handoff data:", error);
+      setStatusText(error?.message || "Unable to update delivery status");
     }
-
-    if (action === "completed-delivery" && parsedData.completedDelivery) {
-      setCompletedDelivery(parsedData.completedDelivery);
-      setStatusText("Delivery completed. Waiting for the next request.");
-    }
-
-    if (action === "pending-delivery" && parsedData.pendingDelivery) {
-      const pendingRequest = parsedData.pendingDelivery;
-      setPendingDeliveries((previous) => {
-        if (previous.some((item) => item.id === pendingRequest.id)) {
-          return previous;
-        }
-        return [...previous, { ...pendingRequest, savedAt: new Date().toISOString() }];
-      });
-      setStatusText("Delivery saved for later. You can resume it from the pending list.");
-    }
-
-    navigation.setParams({ action: undefined, data: undefined });
-  }, [navigation, route.params?.action, route.params?.data]);
+  }, [acceptedDelivery]);
 
   useEffect(() => {
     if (!activeRequest) {
@@ -412,14 +431,31 @@ const DriverDashboard = () => {
         </TouchableOpacity>
 
         <View style={styles.centeredPanel}>
-          <Text style={styles.helperText}>
-            The dashboard listens for the socket event and shows a full-screen request modal when orders arrive.
-            Accepting hands off navigation to the AdduGenet EShop app.
-          </Text>
+          {acceptedDelivery ? (
+            <View style={styles.activeDeliveryCard}>
+              <Text style={styles.activeDeliveryTitle}>Active delivery</Text>
+              <Text style={styles.activeDeliveryText}>Pickup: {acceptedDelivery.pickupStoreName}</Text>
+              <Text style={styles.activeDeliveryText}>Customer: {acceptedDelivery.customerName}</Text>
+              <View style={styles.deliveryActions}>
+                <TouchableOpacity
+                  style={styles.secondaryAction}
+                  onPress={() => markDeliveryStatus("Picked Up")}
+                >
+                  <Text style={styles.secondaryActionText}>Mark picked up</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.primaryAction}
+                  onPress={() => markDeliveryStatus("Delivered")}
+                >
+                  <Text style={styles.primaryActionText}>Mark delivered</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : null}
           {isTransitioning ? (
             <View style={styles.loaderRow}>
               <ActivityIndicator color="#8a6c09" />
-              <Text style={styles.loaderText}>Handing off to route navigation...</Text>
+              <Text style={styles.loaderText}>Accepting delivery...</Text>
             </View>
           ) : null}
         </View>
@@ -510,6 +546,24 @@ const styles = StyleSheet.create({
     color: "#065f46",
     marginTop: 4,
   },
+  activeDeliveryCard: {
+    marginTop: 16,
+    backgroundColor: "#fff7ed",
+    borderRadius: 12,
+    padding: 12,
+  },
+  activeDeliveryTitle: {
+    fontWeight: "700",
+    color: "#9a3412",
+  },
+  activeDeliveryText: {
+    color: "#7c2d12",
+    marginTop: 4,
+  },
+  deliveryActions: {
+    flexDirection: "row",
+    gap: 10,
+  },
   pendingCard: {
     marginTop: 16,
     backgroundColor: "#ffffff",
@@ -550,6 +604,18 @@ const styles = StyleSheet.create({
   },
   primaryActionText: {
     color: "#ffffff",
+    fontWeight: "700",
+  },
+  secondaryAction: {
+    flex: 1,
+    marginTop: 16,
+    backgroundColor: "#e5e7eb",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  secondaryActionText: {
+    color: "#374151",
     fontWeight: "700",
   },
   centeredPanel: {

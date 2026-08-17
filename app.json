@@ -2,7 +2,6 @@
   "expo": {
     "name": "AGESDriver",
     "slug": "AGESDriver",
-    "scheme": "agesdriver",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -20,6 +19,14 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "default"
+        }
+      ]
+    ]
   }
 }
