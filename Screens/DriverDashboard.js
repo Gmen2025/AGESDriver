@@ -11,6 +11,7 @@ import { Audio } from "expo-av";
 import * as Haptics from "expo-haptics";
 
 import DeliveryRequestModal from "../Shared/DeliveryRequestModal";
+import LiveDeliveryMap from "../Shared/LiveDeliveryMap";
 import {
   disconnectDriverSocket,
   emitDriverEvent,
@@ -57,6 +58,18 @@ const DriverDashboard = () => {
   const soundRef = useRef(null);
   const timerRef = useRef(null);
   const mountedRef = useRef(true);
+
+  const handleDriverLocation = useCallback((location) => {
+    emitDriverEvent("driver_location_updated", {
+      orderId: acceptedDelivery?.id,
+      driverId: location.driverId,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      recordedAt: new Date().toISOString(),
+    }).catch((error) => {
+      console.warn("Unable to emit driver location:", error?.message || error);
+    });
+  }, [acceptedDelivery?.id]);
 
   const stopAlert = useCallback(async () => {
     try {
@@ -450,6 +463,11 @@ const DriverDashboard = () => {
                   <Text style={styles.primaryActionText}>Mark delivered</Text>
                 </TouchableOpacity>
               </View>
+              <LiveDeliveryMap
+                delivery={acceptedDelivery}
+                driverId={user?._id || process.env.EXPO_PUBLIC_DRIVER_ID || "demo-driver"}
+                onDriverLocation={handleDriverLocation}
+              />
             </View>
           ) : null}
           {isTransitioning ? (
