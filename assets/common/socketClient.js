@@ -69,7 +69,7 @@ export const getSocketConnectionStatus = () => {
   };
 };
 
-export const getDriverSocket = () => {
+export const getDriverSocket = (authToken) => {
   if (socketInstance) {
     return Promise.resolve(socketInstance);
   }
@@ -84,6 +84,7 @@ export const getDriverSocket = () => {
     const instance = io(targetUrl, {
       transports: ["websocket", "polling"],
       path: "/socket.io",
+      auth: authToken ? { token: authToken } : undefined,
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
@@ -121,7 +122,7 @@ export const disconnectDriverSocket = () => {
 export const getSocketEventNames = () => getSocketConfig();
 
 export const registerDriverSocket = async (driverIdentity = {}) => {
-  const socket = await getDriverSocket();
+  const socket = await getDriverSocket(driverIdentity.authToken);
   const driverId =
     driverIdentity?.driverId ||
     process.env.EXPO_PUBLIC_DRIVER_ID ||
@@ -131,14 +132,13 @@ export const registerDriverSocket = async (driverIdentity = {}) => {
     driverId,
     role: "driver",
     platform: "mobile",
-    ...driverIdentity,
   });
 
   return socket;
 };
 
-export const emitDriverEvent = async (eventName, payload) => {
-  const socket = await getDriverSocket();
+export const emitDriverEvent = async (eventName, payload, authToken) => {
+  const socket = await getDriverSocket(authToken);
   socket.emit(eventName, payload);
   return socket;
 };

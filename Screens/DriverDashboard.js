@@ -9,6 +9,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Audio } from "expo-av";
 import * as Haptics from "expo-haptics";
+import * as Location from "expo-location";
 
 import DeliveryRequestModal from "../Shared/DeliveryRequestModal";
 import LiveDeliveryMap from "../Shared/LiveDeliveryMap";
@@ -27,6 +28,7 @@ import {
   removeDriverNotificationListener,
 } from "../assets/common/notifications";
 import { updateDeliveryStatus } from "../assets/common/delivery";
+import baseUrl from "../assets/common/baseUrl";
 
 const DEFAULT_DRIVER_COORDINATES = {
   latitude: 8.9806,
@@ -55,9 +57,56 @@ const DriverDashboard = () => {
   const [completedDelivery, setCompletedDelivery] = useState(null);
   const [acceptedDelivery, setAcceptedDelivery] = useState(null);
   const [pendingDeliveries, setPendingDeliveries] = useState([]);
+  const [serviceRequests, setServiceRequests] = useState([]);
+  const [serviceLoading, setServiceLoading] = useState(true);
   const soundRef = useRef(null);
   const timerRef = useRef(null);
   const mountedRef = useRef(true);
+
+  const loadServiceRequests = useCallback(async () => {
+    if (!token) {
+      return;
+    }
+
+    try {
+      setServiceLoading(true);
+      const response = await fetch(`${baseUrl}service-requests/assigned`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        throw new Error(`Service requests unavailable (${response.status})`);
+      }
+      setServiceRequests(await response.json());
+    } catch (error) {
+      console.warn("Unable to load assigned service requests:", error?.message || error);
+    } finally {
+      setServiceLoading(false);
+    }
+  }, [token]);
+
+  const updateServiceStatus = useCallback(async (requestId, status) => {
+    try {
+      const response = await fetch(`${baseUrl}service-requests/${requestId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ status }),
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || "Unable to update service request");
+      }
+      const updated = await response.json();
+      setServiceRequests((requests) => requests.map((request) => request._id === requestId ? updated : request));
+    } catch (error) {
+      setStatusText(error?.message || "Unable to update service request");
+    }
+  }, [token]);
+
+  useEffect(() => {
+    loadServiceRequests();
+  }, [loadServiceRequests]);
 
   const handleDriverLocation = useCallback((location) => {
     emitDriverEvent("driver_location_updated", {
@@ -66,10 +115,63 @@ const DriverDashboard = () => {
       latitude: location.latitude,
       longitude: location.longitude,
       recordedAt: new Date().toISOString(),
-    }).catch((error) => {
+    }, token).catch((error) => {
       console.warn("Unable to emit driver location:", error?.message || error);
     });
-  }, [acceptedDelivery?.id]);
+  }, [acceptedDelivery?.id, token]);
+
+  useEffect(() => {
+    let subscription;
+    let cancelled = false;
+
+    const startLocationTracking = async () => {
+      if (!token || !user?._id) {
+        return;
+      }
+
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted" || cancelled) {
+        return;
+      }
+
+      const emitLocation = (coords) => {
+        handleDriverLocation({
+          driverId: user._id,
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        });
+      };
+
+      const currentPosition = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      if (!cancelled) {
+        emitLocation(currentPosition.coords);
+      }
+
+      subscription = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          distanceInterval: 25,
+          timeInterval: 10000,
+        },
+        (position) => {
+          if (!cancelled) {
+            emitLocation(position.coords);
+          }
+        }
+      );
+    };
+
+    startLocationTracking().catch((error) => {
+      console.warn("Unable to start driver location tracking:", error?.message || error);
+    });
+
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+    };
+  }, [handleDriverLocation, token, user?._id]);
 
   const stopAlert = useCallback(async () => {
     try {
@@ -122,6 +224,14 @@ const DriverDashboard = () => {
 
   const handlePushDelivery = useCallback((notification) => {
     const data = notification?.request?.content?.data || {};
+    if (data.type === "service_request_assigned" && data.request) {
+      setServiceRequests((requests) => [
+        data.request,
+        ...requests.filter((request) => request._id !== data.request._id),
+      ]);
+      setStatusText("New service job assigned");
+      return;
+    }
     if (data.type !== "delivery_assigned" && !data.orderId) {
       return;
     }
@@ -206,7 +316,7 @@ const DriverDashboard = () => {
 
     const attachSocketListeners = async () => {
       try {
-        const socket = await getDriverSocket();
+        const socket = await getDriverSocket(token);
         if (!mountedRef.current) {
           return;
         }
@@ -218,6 +328,7 @@ const DriverDashboard = () => {
         const { deliveryEvent, statusEvent } = getSocketEventNames();
         registerDriverSocket({
           driverId: user?._id || process.env.EXPO_PUBLIC_DRIVER_ID || "demo-driver",
+          authToken: token,
         });
 
         const handleIncomingRequest = (payload) => {
@@ -268,6 +379,18 @@ const DriverDashboard = () => {
           setStatusText(`Assigned to delivery ${normalizedRequest.pickupStoreName}`);
         };
 
+        const handleServiceAssigned = (payload) => {
+          const request = payload?.request;
+          if (!request) {
+            return;
+          }
+          setServiceRequests((requests) => [
+            request,
+            ...requests.filter((item) => item._id !== request._id),
+          ]);
+          setStatusText(`New service job assigned: ${request.machineType || "Machine service"}`);
+        };
+
         const handleConnect = () => {
           setSocketConnected(true);
           setStatusText("Connected to dispatcher. Waiting for requests...");
@@ -281,6 +404,7 @@ const DriverDashboard = () => {
         socket.on(deliveryEvent, handleIncomingRequest);
         socket.on("driver_assigned", handleDriverAssigned);
         socket.on("order_assigned", handleDriverAssigned);
+        socket.on("service_request_assigned", handleServiceAssigned);
         socket.on(statusEvent, (payload) => {
           if (payload?.status === "accepted" || payload?.status === "rejected") {
             setStatusText(`Order ${payload.status} for ${payload.orderId || "request"}`);
@@ -293,6 +417,7 @@ const DriverDashboard = () => {
           socket.off(deliveryEvent, handleIncomingRequest);
           socket.off("driver_assigned", handleDriverAssigned);
           socket.off("order_assigned", handleDriverAssigned);
+          socket.off("service_request_assigned", handleServiceAssigned);
           socket.off(statusEvent, () => {});
           socket.off("connect", handleConnect);
           socket.off("disconnect", handleDisconnect);
@@ -318,7 +443,7 @@ const DriverDashboard = () => {
       }
       disconnectDriverSocket();
     };
-  }, [playAlert, stopAlert, user?._id]);
+  }, [playAlert, stopAlert, token, user?._id]);
 
   const markDeliveryStatus = useCallback(async (deliveryStatus) => {
     if (!acceptedDelivery) {
@@ -439,6 +564,34 @@ const DriverDashboard = () => {
           </View>
         ) : null}
 
+        <View style={styles.serviceCard}>
+          <View style={styles.serviceHeaderRow}>
+            <Text style={styles.serviceTitle}>Assigned service jobs</Text>
+            <TouchableOpacity onPress={loadServiceRequests}>
+              <Text style={styles.serviceRefresh}>Refresh</Text>
+            </TouchableOpacity>
+          </View>
+          {serviceLoading ? <ActivityIndicator color="#8a6c09" /> : null}
+          {!serviceLoading && serviceRequests.length === 0 ? (
+            <Text style={styles.serviceEmpty}>No machine repair jobs assigned.</Text>
+          ) : null}
+          {serviceRequests.map((request) => (
+            <View key={request._id} style={styles.serviceItem}>
+              <Text style={styles.serviceItemTitle}>{request.machineType || "Machine service"}</Text>
+              <Text style={styles.serviceItemText}>{request.customer?.name || "Customer"} · {request.serviceLocation || "Location pending"}</Text>
+              <Text style={styles.serviceItemText}>{request.problemDescription || "No description"}</Text>
+              <View style={styles.serviceActions}>
+                <TouchableOpacity style={styles.serviceAction} onPress={() => updateServiceStatus(request._id, "in_progress")}>
+                  <Text style={styles.serviceActionText}>Start job</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.serviceAction} onPress={() => updateServiceStatus(request._id, "completed")}>
+                  <Text style={styles.serviceActionText}>Complete</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+        </View>
+
         <TouchableOpacity style={styles.primaryAction} onPress={simulateDemoRequest}>
           <Text style={styles.primaryActionText}>Simulate incoming request</Text>
         </TouchableOpacity>
@@ -466,7 +619,6 @@ const DriverDashboard = () => {
               <LiveDeliveryMap
                 delivery={acceptedDelivery}
                 driverId={user?._id || process.env.EXPO_PUBLIC_DRIVER_ID || "demo-driver"}
-                onDriverLocation={handleDriverLocation}
               />
             </View>
           ) : null}
@@ -612,6 +764,61 @@ const styles = StyleSheet.create({
   pendingItemAction: {
     color: "#8a6c09",
     fontWeight: "700",
+  },
+  serviceCard: {
+    marginTop: 16,
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
+    padding: 16,
+  },
+  serviceHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  serviceTitle: {
+    fontWeight: "700",
+    fontSize: 16,
+    color: "#111827",
+  },
+  serviceRefresh: {
+    color: "#8a6c09",
+    fontWeight: "700",
+  },
+  serviceEmpty: {
+    color: "#6b7280",
+    fontSize: 13,
+  },
+  serviceItem: {
+    borderTopWidth: 1,
+    borderTopColor: "#f3f4f6",
+    paddingVertical: 12,
+  },
+  serviceItemTitle: {
+    color: "#111827",
+    fontWeight: "700",
+  },
+  serviceItemText: {
+    color: "#6b7280",
+    fontSize: 13,
+    marginTop: 4,
+  },
+  serviceActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 10,
+  },
+  serviceAction: {
+    backgroundColor: "#ecfdf5",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  serviceActionText: {
+    color: "#166534",
+    fontWeight: "700",
+    fontSize: 12,
   },
   primaryAction: {
     marginTop: 16,
